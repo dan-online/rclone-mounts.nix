@@ -46,6 +46,13 @@
         ];
       };
 
+      # The module checks every minute from two minutes after boot. Check
+      # sooner here so the test does not sit waiting for the timer.
+      systemd.timers.data-mnt-healthcheck.timerConfig = {
+        OnBootSec = pkgs.lib.mkForce "30s";
+        OnUnitActiveSec = pkgs.lib.mkForce "15s";
+      };
+
       # Started by the test, once it controls when the remote appears.
       systemd.services.late-mnt.wantedBy = pkgs.lib.mkForce [ ];
 

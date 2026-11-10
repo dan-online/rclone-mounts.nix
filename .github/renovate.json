@@ -1,0 +1,21 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "github>dan-online/.github:renovate-config"
+  ],
+  "timezone": "Europe/London",
+  "nix": {
+    "enabled": true
+  },
+  "packageRules": [
+    {
+      "description": "One weekly PR for the flake inputs and the workflow actions, so CI runs once.",
+      "matchManagers": [
+        "nix",
+        "github-actions"
+      ],
+      "groupName": "all dependencies",
+      "groupSlug": "all"
+    }
+  ]
+}
