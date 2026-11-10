@@ -4,16 +4,18 @@
   nodes.machine =
     { pkgs, ... }:
     {
-      # The local backend needs no remotes, so the config file is empty.
-      environment.etc."rclone.conf".text = "";
+      # The local backend needs no remotes, so the config file starts empty.
+      # The test adds the `late` remote while late-mnt is already starting.
       systemd.tmpfiles.rules = [
+        "d /var/lib/rclone-test 0700 root root -"
+        "f /var/lib/rclone-test/rclone.conf 0600 root root -"
         "d /srv/data 0755 root root -"
         "f /srv/data/hello 0644 root root - hello"
         "d /srv/tuned 0755 root root -"
       ];
 
       services.rclone-mounts = {
-        configPath = "/etc/rclone.conf";
+        configPath = "/var/lib/rclone-test/rclone.conf";
         mounts = [
           {
             source = "/srv/data";
@@ -23,6 +25,12 @@
             extraFlags = [ "--dir-cache-time=5s" ];
             uid = 900;
             rc-port = 5572;
+          }
+          {
+            source = "late:";
+            target = "late";
+            type = "sftp";
+            flags = [ ];
           }
           # The tuned flag sets must keep parsing as rclone moves.
           {
@@ -38,6 +46,9 @@
         ];
       };
 
+      # Started by the test, once it controls when the remote appears.
+      systemd.services.late-mnt.wantedBy = pkgs.lib.mkForce [ ];
+
       environment.systemPackages = [ pkgs.curl ];
     };
 
@@ -45,9 +56,15 @@
     def main_pid():
         return machine.succeed("systemctl show -p MainPID --value data-mnt.service").strip()
 
+    def rclone_pid():
+        return machine.succeed(f"pgrep -P {main_pid()} | head -n1").strip()
+
+    # The unit retries a mount that dies young without restarting, so follow
+    # the rclone process and not the unit's main process.
     def wait_for_new_mount(old_pid):
         machine.wait_until_succeeds(
-            f'test "$(systemctl show -p MainPID --value data-mnt.service)" != {old_pid}'
+            'pid="$(pgrep -P "$(systemctl show -p MainPID --value data-mnt.service)" | head -n1)"'
+            f' && test -n "$pid" && test "$pid" != {old_pid}'
             " && timeout 5 grep -q hello /mnt/data/hello",
             timeout=300,
         )
@@ -71,13 +88,23 @@
             'curl -sf -u "$RCLONE_RC_USER:$RCLONE_RC_PASS" -X POST http://127.0.0.1:5572/core/version'
         )
 
+    with subtest("a mount whose remote appears late starts without failing"):
+        machine.succeed("systemctl start --no-block late-mnt.service")
+        machine.wait_until_succeeds("journalctl -u late-mnt.service | grep -q 'retrying (1/10)'", timeout=30)
+        machine.succeed(
+            "printf '[late]\\ntype = alias\\nremote = /srv/data\\n' >> /var/lib/rclone-test/rclone.conf"
+        )
+        machine.wait_for_unit("late-mnt.service")
+        machine.succeed("grep -q hello /mnt/late/hello")
+        assert machine.succeed("systemctl show -p NRestarts --value late-mnt.service").strip() == "0"
+
     with subtest("systemd restarts a killed mount"):
-        pid = main_pid()
+        pid = rclone_pid()
         machine.succeed(f"kill -KILL {pid}")
         wait_for_new_mount(pid)
 
     with subtest("the health timer restarts a hung mount"):
-        pid = main_pid()
+        pid = rclone_pid()
         machine.succeed(f"kill -STOP {pid}")
         # The hang is real: reads block until the timer steps in.
         machine.wait_until_fails("timeout 5 stat /mnt/data/hello", timeout=60)

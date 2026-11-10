@@ -22,6 +22,7 @@ That mounts the `gdrive` remote at `/mnt/drive` as `drive-mnt.service`.
 nixpkgs has the `mount.rclone` helper but no service module, and Home Manager's `programs.rclone` makes user mounts. I wanted system mounts that containers can depend on, so this module gives each mount:
 
 - a systemd service, `<target>-mnt.service`, that only reports started once `/mnt/<target>` is a real mount point, so a unit ordered after it never sees an empty directory
+- a start that retries for about a minute if rclone can't reach the remote yet, so a switch that restarts DNS doesn't fail the unit
 - a timer that runs `stat` on the mount every minute and restarts the service if it doesn't answer within 10 seconds
 - optionally its own `rclone-<target>` user, so only root and that UID can read the files
 - optionally rclone's remote-control API behind basic auth, with credentials generated on the host
@@ -98,7 +99,7 @@ Everything is under `services.rclone-mounts`.
 
 ## Testing
 
-`nix flake check` boots a NixOS VM, mounts a local directory, kills the mount, then freezes it, and checks that it comes back both times.
+`nix flake check` boots a NixOS VM, mounts a local directory, starts a mount before its remote exists, kills a mount, then freezes it, and checks that it comes up every time.
 
 ## License
 

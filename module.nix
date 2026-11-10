@@ -107,7 +107,36 @@ let
             ${pkgs.coreutils}/bin/mkdir -p /mnt/${name} || true
             exit 0
           '';
-          ExecStart = "${cfg.package}/bin/rclone mount ${mount.source} /mnt/${name} ${lib.concatStringsSep " " (mountFlags mount)}";
+          # rclone exits at once when it cannot reach the remote, for example
+          # while DNS restarts during a system switch. Retry for about a minute
+          # while each attempt dies within 10 seconds. A mount that ran longer
+          # had come up, so its exit ends the unit and systemd restarts it.
+          ExecStart = pkgs.writeScript "rclone-mount-${name}" ''
+            #!/bin/sh
+            attempt=1
+            while :; do
+              started=$(${pkgs.coreutils}/bin/date +%s)
+              ${cfg.package}/bin/rclone mount ${
+                lib.escapeShellArgs (
+                  [
+                    mount.source
+                    "/mnt/${name}"
+                  ]
+                  ++ mountFlags mount
+                )
+              }
+              status=$?
+              elapsed=$(($(${pkgs.coreutils}/bin/date +%s) - started))
+              if [ "$status" -eq 0 ] || [ "$elapsed" -ge 10 ] || [ "$attempt" -ge 10 ]; then
+                exit "$status"
+              fi
+              echo "rclone: mounting /mnt/${name} failed after ''${elapsed}s, retrying ($attempt/10)" >&2
+              attempt=$((attempt + 1))
+              ${pkgs.coreutils}/bin/sleep 5
+              # A mount that died young can leave a dead FUSE mount behind.
+              /run/wrappers/bin/fusermount -u /mnt/${name} 2>/dev/null || true
+            done
+          '';
           # Hold the unit in "activating" until the FUSE mount is actually established,
           # so units ordered After=/Requires= this one only start once /mnt/${name}
           # is a real mountpoint (rclone attaches it within ~1s). Fixes containers
